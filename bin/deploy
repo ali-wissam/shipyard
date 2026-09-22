@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/shipyard/lib/config.sh
+SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/config.sh"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/docker.sh"
 
 PROJECT="${1:-}"
 ARTIFACT_PATH="${2:-}"
@@ -20,7 +24,9 @@ RELEASE_DIR="$RELEASES_DIR/$RELEASE_ID"
 KEEP="${KEEP_RELEASES:-5}"
 TYPE="${TYPE:-static}"
 HEALTH_FILE="${HEALTH_CHECK_FILE:-index.html}"
-LOG_FILE="/var/log/shipyard/$PROJECT.log"
+LOG_FILE="$LOG_DIR/$PROJECT.log"
+
+mkdir -p "$LOG_DIR"
 
 if [ ! -f "$ARTIFACT_PATH" ]; then
   echo "Artifact not found: $ARTIFACT_PATH"
@@ -33,29 +39,93 @@ mkdir -p "$RELEASES_DIR" "$RELEASE_DIR"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deploy started: $PROJECT $RELEASE_ID"
 } >> "$LOG_FILE"
 
+PREVIOUS_RELEASE=""
+if [ -L "$CURRENT_LINK" ]; then
+  PREVIOUS_RELEASE="$(readlink -f "$CURRENT_LINK")"
+fi
+
+deploy_failed() {
+  local reason="$1"
+  echo "$reason"
+
+  if [ -L "$CURRENT_LINK" ]; then
+    rm "$CURRENT_LINK"
+  fi
+
+  if [ -n "$PREVIOUS_RELEASE" ] && [ -d "$PREVIOUS_RELEASE" ]; then
+    ln -s "$PREVIOUS_RELEASE" "$CURRENT_LINK"
+
+    if [ "$TYPE" = "docker" ]; then
+      echo "Restoring previous Docker deployment..."
+      if ! docker_restore_release "$PROJECT" "$PROJECT_DIR" "$PREVIOUS_RELEASE" "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}"; then
+        echo "Warning: failed to restore previous Docker deployment"
+      fi
+    fi
+  fi
+
+  if [ -d "$RELEASE_DIR" ]; then
+    rm -rf "$RELEASE_DIR"
+  fi
+
+  {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deploy failed: $PROJECT $RELEASE_ID - $reason"
+  } >> "$LOG_FILE"
+
+  exit 1
+}
+
 tar -xzf "$ARTIFACT_PATH" -C "$RELEASE_DIR"
 
-if [ "$TYPE" = "static" ] && [ ! -f "$RELEASE_DIR/$HEALTH_FILE" ]; then
-  echo "Health check failed: $HEALTH_FILE not found"
-  rm -rf "$RELEASE_DIR"
-  exit 1
+if [ "$TYPE" = "docker" ]; then
+  COMPOSE_FILE="${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}"
+  DOCKER_APP_PORT="${DOCKER_PORT:-8080}"
+
+  if [ ! -f "$RELEASE_DIR/$COMPOSE_FILE" ]; then
+    deploy_failed "Compose file not found: $RELEASE_DIR/$COMPOSE_FILE"
+  fi
+
+  if [ -L "$CURRENT_LINK" ]; then
+    rm "$CURRENT_LINK"
+  elif [ -d "$CURRENT_LINK" ]; then
+    rm -rf "$CURRENT_LINK"
+  fi
+
+  ln -s "$RELEASE_DIR" "$CURRENT_LINK"
+
+  docker_link_shared_env "$PROJECT_DIR" "$RELEASE_DIR"
+
+  if ! docker_compose_run "$PROJECT" "$RELEASE_DIR" "$COMPOSE_FILE" up -d --build; then
+    deploy_failed "Docker compose up failed"
+  fi
+
+  if ! docker_health_check "$PROJECT" "$RELEASE_DIR" "$COMPOSE_FILE" "$DOCKER_APP_PORT"; then
+    deploy_failed "Docker health check failed"
+  fi
+else
+  if [ "$TYPE" = "static" ] && [ ! -f "$RELEASE_DIR/$HEALTH_FILE" ]; then
+    rm -rf "$RELEASE_DIR"
+    echo "Health check failed: $HEALTH_FILE not found"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deploy failed: $PROJECT $RELEASE_ID - health check file missing"
+    } >> "$LOG_FILE"
+    exit 1
+  fi
+
+  if [ -L "$CURRENT_LINK" ]; then
+    rm "$CURRENT_LINK"
+  elif [ -d "$CURRENT_LINK" ]; then
+    rm -rf "$CURRENT_LINK"
+  fi
+
+  ln -s "$RELEASE_DIR" "$CURRENT_LINK"
 fi
 
-if [ -L "$CURRENT_LINK" ]; then
-  rm "$CURRENT_LINK"
-elif [ -d "$CURRENT_LINK" ]; then
-  rm -rf "$CURRENT_LINK"
+if [ -d "$RELEASES_DIR" ]; then
+  ls -1dt "$RELEASES_DIR"/*/ 2>/dev/null \
+    | grep -v "$RELEASE_DIR/" \
+    | tail -n +$((KEEP + 1)) \
+    | xargs rm -rf 2>/dev/null || true
 fi
-
-ln -s "$RELEASE_DIR" "$CURRENT_LINK"
-
-find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d \
-  ! -path "$RELEASE_DIR" \
-  -printf '%T@ %p\n' \
-  | sort -n \
-  | head -n "-$((KEEP - 1))" \
-  | cut -d' ' -f2- \
-  | xargs -r rm -rf
 
 rm -f "$ARTIFACT_PATH"
 

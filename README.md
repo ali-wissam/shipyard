@@ -1,10 +1,10 @@
-#  Shipyard
+# Shipyard
 
 > A lightweight self-hosted deployment platform for VPS-hosted applications.
 
 Shipyard automates the repetitive parts of deploying applications to your own server. It creates projects, manages release-based deployments, generates Nginx configurations, keeps deployment history, and integrates seamlessly with GitHub Actions.
 
-Whether you're hosting a personal portfolio, APIs, SaaS products, or internal tools, Shipyard provides a simple and consistent deployment workflow without relying on external platforms.
+Whether you're hosting a personal portfolio, APIs, SaaS products, Docker applications, or internal tools, Shipyard provides a simple and consistent deployment workflow without relying on external platforms.
 
 ---
 
@@ -25,11 +25,15 @@ Instead of:
 
 You simply run:
 
-bash shipyard create portfolio --type static --domain example.com 
+```bash
+shipyard create portfolio --type static --domain example.com
+```
 
 or deploy a new release with:
 
-bash shipyard deploy portfolio /tmp/portfolio.tar.gz <release-id> 
+```bash
+shipyard deploy portfolio /tmp/portfolio.tar.gz <release-id>
+```
 
 ---
 
@@ -43,6 +47,7 @@ bash shipyard deploy portfolio /tmp/portfolio.tar.gz <release-id>
   - Static
   - Laravel
   - Node
+  - Docker
 - Project configuration management
 - Deployment status
 - Health checks
@@ -54,13 +59,43 @@ bash shipyard deploy portfolio /tmp/portfolio.tar.gz <release-id>
 
 # Architecture
 
-Developer      │      ▼ Git Push      │      ▼ GitHub Actions      │      ▼ Build Artifact      │      ▼ Shipyard      │      ▼ Release Directory      │   ▼ Atomic Symlink Switch      │      ▼ Nginx      │      ▼ Production
+```
+Developer
+   │
+   ▼ Git Push
+   │
+   ▼ GitHub Actions
+   │
+   ▼ Build Artifact
+   │
+   ▼ Shipyard CLI
+   │
+   ├─ Release Manager
+   ├─ Docker Compose (docker projects)
+   └─ Nginx Generator
+   │
+   ▼ Production
+```
 
 Each deployment creates a new immutable release directory.
 
-/var/www/sites/portfolio  ├── current -> releases/8fa2d19 ├── releases │   ├── 4ab8321 │   ├── 6e019ba │   └── 8fa2d19 └── shared
+```
+/var/www/sites/portfolio
+├── current -> releases/8fa2d19
+├── releases
+│   ├── 4ab8321
+│   ├── 6e019ba
+│   └── 8fa2d19
+└── shared
+```
 
-Deployments become atomic by updating the current symlink rather than replacing files in place.
+Deployments become atomic by updating the `current` symlink rather than replacing files in place.
+
+For Docker projects, Nginx proxies public traffic to the application on a local port:
+
+```
+Internet → Nginx :80/:443 → 127.0.0.1:<DOCKER_PORT> → Docker application
+```
 
 ---
 
@@ -68,15 +103,22 @@ Deployments become atomic by updating the current symlink rather than replacing 
 
 Clone the repository:
 
-bash git clone https://github.com/<your-username>/shipyard.git cd shipyard 
+```bash
+git clone https://github.com/<your-username>/shipyard.git
+cd shipyard
+```
 
 Install Shipyard:
 
-bash sudo ./install.sh 
+```bash
+sudo ./install.sh
+```
 
 Verify your installation:
 
-bash shipyard doctor 
+```bash
+shipyard doctor
+```
 
 ---
 
@@ -84,63 +126,170 @@ bash shipyard doctor
 
 ## Create a project
 
-bash shipyard create portfolio \     --type static \     --domain example.com 
+```bash
+shipyard create portfolio \
+  --type static \
+  --domain example.com
+```
 
 Supported project types:
 
-- static
-- laravel
-- node
+- `static`
+- `laravel`
+- `node`
+- `docker`
+
+### Create a Docker project
+
+```bash
+shipyard create blog \
+  --type docker \
+  --domain blog.ali-wissam.com \
+  --port 8080
+```
+
+Docker projects require the application repository to provide:
+
+- `Dockerfile`
+- `docker-compose.prod.yml` (or the file configured in the project)
+
+The `--port` flag sets the host port Nginx proxies to (default: `8080`).
 
 ---
 
 ## Deploy a release
 
-bash shipyard deploy portfolio \     /tmp/portfolio.tar.gz \     394bfe1004a96cf518b1832c7253a65978ad9914 
+```bash
+shipyard deploy portfolio \
+  /tmp/portfolio.tar.gz \
+  394bfe1004a96cf518b1832c7253a65978ad9914
+```
+
+For Docker projects, the artifact should contain the application source and Docker configuration:
+
+```
+release/
+├── Dockerfile
+├── docker-compose.prod.yml
+├── .dockerignore
+├── app/
+└── ...
+```
+
+Shipyard extracts the artifact, switches the `current` release, and runs:
+
+```bash
+docker compose -p shipyard-<project> -f docker-compose.prod.yml up -d --build
+```
+
+Deployments are only marked successful after Docker containers are running and the configured port responds.
 
 ---
 
 ## Check project status
 
-bash shipyard status portfolio 
+```bash
+shipyard status portfolio
+```
+
+For Docker projects:
+
+```bash
+shipyard status blog
+```
+
+Example output:
+
+```
+Project : blog
+Type    : docker
+Domain  : blog.ali-wissam.com
+Release : abc123
+Docker:
+  Compose project : shipyard-blog
+  Status          : running
+  Port            : 8080
+```
 
 ---
 
 ## Roll back
 
-bash shipyard rollback portfolio 
+```bash
+shipyard rollback portfolio
+```
+
+For Docker projects, rollback switches to the previous release and recreates the Docker application from that release.
 
 ---
 
 ## Regenerate Nginx configuration
 
-bash shipyard nginx portfolio 
+```bash
+shipyard nginx portfolio
+```
 
 ---
 
 ## List projects
 
-bash shipyard list 
+```bash
+shipyard list
+```
 
 ---
 
 ## Verify installation
 
-bash shipyard doctor 
+```bash
+shipyard doctor
+```
 
 ---
 
 # Project Types
-
-Configurable project types with extensible deployment templates
 
 | Type | Description |
 |------|-------------|
 | Static | Static websites (Astro, Vite, React build output, etc.) |
 | Laravel | Laravel applications (foundation for future deployment hooks) |
 | Node | Node.js applications (foundation for future deployment hooks) |
+| Docker | Docker applications using Compose (PHP, Node, custom stacks, etc.) |
 
-Additional project types will be added in future releases.
+---
+
+# Docker Projects
+
+Shipyard orchestrates Docker deployments but does not generate Dockerfiles or application images. Your repository defines the container setup.
+
+### Requirements
+
+- `Dockerfile`
+- `docker-compose.prod.yml` (default; configurable per project)
+- Application listens on the configured host port (default `8080`)
+
+### Environment variables
+
+Shipyard does not commit or generate production secrets. Place persistent environment files on the server:
+
+```
+/var/www/sites/blog/shared/.env
+```
+
+During deployment, Shipyard links `shared/.env` into the active release without overwriting an existing production `.env` in the release directory.
+
+### Persistent data
+
+Docker volumes are managed by Docker Compose and survive normal deployments. Shipyard never runs destructive commands such as `docker compose down -v` during deploy or rollback.
+
+### Failure safety
+
+If a Docker deployment fails health checks, Shipyard:
+
+1. Logs the failure
+2. Restores the previous `current` release
+3. Attempts to restore the previous Docker deployment
+4. Removes the failed release directory
 
 ---
 
@@ -155,7 +304,9 @@ A typical workflow:
 3. Upload the artifact to the VPS.
 4. Execute:
 
-bash shipyard deploy <project> /tmp/artifact.tar.gz <release-id> 
+```bash
+shipyard deploy <project> /tmp/artifact.tar.gz <release-id>
+```
 
 ---
 
@@ -168,7 +319,6 @@ Upcoming features include:
 - Deployment hooks
 - Laravel deployment pipeline
 - Node.js service management
-- Docker deployments
 - Remote deployment monitoring
 - Plugin support
 

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
+
+if [ ! -d "$SHIPYARD_ROOT" ]; then
+  SHIPYARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+export SHIPYARD_ROOT
+
 COMMAND="${1:-}"
 
 show_help() {
@@ -41,9 +49,15 @@ show_help() {
 
   echo ""
 
+  echo "Project types: static, laravel, node, docker"
+
+  echo ""
+
   echo "Examples:"
 
-  echo "  shipyard create portfolio"
+  echo "  shipyard create portfolio --type static --domain example.com"
+
+  echo "  shipyard create blog --type docker --domain blog.example.com --port 8080"
 
   echo "  shipyard deploy portfolio /tmp/site.tar.gz abc123"
 
@@ -55,45 +69,45 @@ show_help() {
 case "$COMMAND" in
   create)
     shift
-    /opt/shipyard/bin/create "$@"
+    "$SHIPYARD_ROOT/bin/create" "$@"
     ;;
   deploy)
     shift
-    /opt/shipyard/bin/deploy "$@"
+    "$SHIPYARD_ROOT/bin/deploy" "$@"
     ;;
   list)
-    /opt/shipyard/bin/list
+    "$SHIPYARD_ROOT/bin/list"
     ;;
   status)
     shift
-    /opt/shipyard/bin/status "$@"
+    "$SHIPYARD_ROOT/bin/status" "$@"
     ;;
   rollback)
     shift
-    /opt/shipyard/bin/rollback "$@"
+    "$SHIPYARD_ROOT/bin/rollback" "$@"
     ;;
   doctor)
-    /opt/shipyard/bin/doctor
+    "$SHIPYARD_ROOT/bin/doctor"
     ;;
   dns-check)
 
     shift
 
-    /opt/shipyard/bin/dns-check "$@"
+    "$SHIPYARD_ROOT/bin/dns-check" "$@"
     ;;
   ssl)
 
     shift
 
-    /opt/shipyard/bin/ssl "$@"
+    "$SHIPYARD_ROOT/bin/ssl" "$@"
     ;;
   version)
 
-    cat /opt/shipyard/VERSION
+    cat "$SHIPYARD_ROOT/VERSION"
     ;;
   nginx)
     shift
-    /opt/shipyard/bin/nginx "$@"
+    "$SHIPYARD_ROOT/bin/nginx" "$@"
     ;;
 help|-h|--help|"")
 

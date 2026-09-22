@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/shipyard/lib/config.sh
+SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/config.sh"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/docker.sh"
 
 PROJECT="${1:-}"
 
@@ -14,28 +18,62 @@ load_project_config "$PROJECT"
 
 CURRENT_LINK="$PROJECT_DIR/current"
 RELEASES_DIR="$PROJECT_DIR/releases"
+TYPE="${TYPE:-static}"
 
-echo "Project: $PROJECT_NAME"
-echo "Directory: $PROJECT_DIR"
-echo "Type: ${TYPE:-static}"
-echo "Keep releases: ${KEEP_RELEASES:-5}"
-echo ""
-
-if [ -L "$CURRENT_LINK" ]; then
-  echo "Current release:"
-  readlink -f "$CURRENT_LINK"
+if [ "$TYPE" = "docker" ]; then
+  echo "Project : $PROJECT_NAME"
+  echo "Type    : $TYPE"
+  echo "Domain  : ${DOMAIN:-_}"
 else
-  echo "Current release: missing or not a symlink"
+  echo "Project: $PROJECT_NAME"
+  echo "Directory: $PROJECT_DIR"
+  echo "Type: $TYPE"
+  echo "Keep releases: ${KEEP_RELEASES:-5}"
 fi
 
 echo ""
-echo "Release count:"
-find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l
 
-echo ""
-echo "Latest releases:"
-find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 5
+CURRENT_RELEASE=""
+if [ -L "$CURRENT_LINK" ]; then
+  CURRENT_RELEASE="$(readlink -f "$CURRENT_LINK")"
+  RELEASE_ID="$(basename "$CURRENT_RELEASE")"
+
+  if [ "$TYPE" = "docker" ]; then
+    echo "Release : $RELEASE_ID"
+  else
+    echo "Current release:"
+    echo "$CURRENT_RELEASE"
+  fi
+else
+  if [ "$TYPE" = "docker" ]; then
+    echo "Release : missing"
+  else
+    echo "Current release: missing or not a symlink"
+  fi
+fi
+
+if [ "$TYPE" = "docker" ]; then
+  echo "Docker:"
+  if [ -n "$CURRENT_RELEASE" ] && [ -d "$CURRENT_RELEASE" ]; then
+    docker_status_summary "$PROJECT" "$CURRENT_RELEASE" "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}" "${DOCKER_PORT:-8080}"
+  else
+    echo "  Compose project : $(docker_compose_project_name "$PROJECT")"
+    echo "  Status          : stopped"
+    echo "  Port            : ${DOCKER_PORT:-8080}"
+  fi
+  echo ""
+fi
+
+if [ "$TYPE" != "docker" ]; then
+  echo ""
+  echo "Release count:"
+  find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l
+
+  echo ""
+  echo "Latest releases:"
+  find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -n 5
+fi
 
 echo ""
 echo "Last logs:"
-tail -n 5 "/var/log/shipyard/$PROJECT.log" 2>/dev/null || true
+tail -n 5 "$LOG_DIR/$PROJECT.log" 2>/dev/null || true

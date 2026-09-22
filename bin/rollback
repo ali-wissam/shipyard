@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/shipyard/lib/config.sh
+SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/config.sh"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/docker.sh"
 
 PROJECT="${1:-}"
 
@@ -14,7 +18,10 @@ load_project_config "$PROJECT"
 
 CURRENT_LINK="$PROJECT_DIR/current"
 RELEASES_DIR="$PROJECT_DIR/releases"
-LOG_FILE="/var/log/shipyard/$PROJECT.log"
+LOG_FILE="$LOG_DIR/$PROJECT.log"
+TYPE="${TYPE:-static}"
+
+mkdir -p "$LOG_DIR"
 
 if [ ! -L "$CURRENT_LINK" ]; then
   echo "Current link is missing or not a symlink."
@@ -26,7 +33,11 @@ CURRENT_RELEASE="$(readlink -f "$CURRENT_LINK")"
 PREVIOUS_RELEASE="$(
   find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d \
     | sort \
-    | grep -v "$CURRENT_RELEASE" \
+    | while read -r release; do
+        if [ "$(readlink -f "$release")" != "$CURRENT_RELEASE" ]; then
+          echo "$release"
+        fi
+      done \
     | tail -n 1
 )"
 
@@ -38,7 +49,37 @@ fi
 rm "$CURRENT_LINK"
 ln -s "$PREVIOUS_RELEASE" "$CURRENT_LINK"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rolled back: $PROJECT to $PREVIOUS_RELEASE" >> "$LOG_FILE"
+if [ "$TYPE" = "docker" ]; then
+  COMPOSE_FILE="${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}"
+  DOCKER_APP_PORT="${DOCKER_PORT:-8080}"
+
+  if [ ! -f "$PREVIOUS_RELEASE/$COMPOSE_FILE" ]; then
+    echo "Compose file not found in previous release: $PREVIOUS_RELEASE/$COMPOSE_FILE"
+    exit 1
+  fi
+
+  docker_link_shared_env "$PROJECT_DIR" "$PREVIOUS_RELEASE"
+
+  if ! docker_compose_run "$PROJECT" "$PREVIOUS_RELEASE" "$COMPOSE_FILE" up -d --build; then
+    echo "Docker compose up failed during rollback"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rollback failed: $PROJECT - docker compose up failed"
+    } >> "$LOG_FILE"
+    exit 1
+  fi
+
+  if ! docker_health_check "$PROJECT" "$PREVIOUS_RELEASE" "$COMPOSE_FILE" "$DOCKER_APP_PORT"; then
+    echo "Docker health check failed during rollback"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rollback failed: $PROJECT - health check failed"
+    } >> "$LOG_FILE"
+    exit 1
+  fi
+fi
+
+{
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rolled back: $PROJECT to $PREVIOUS_RELEASE"
+} >> "$LOG_FILE"
 
 echo "Rollback successful:"
 echo "$PROJECT -> $PREVIOUS_RELEASE"

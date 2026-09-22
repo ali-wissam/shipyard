@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+LOG_FILE="${SHIPYARD_MOCK_DOCKER_LOG:-/tmp/mock-docker.log}"
+PID_FILE="${SHIPYARD_TEST_DOCKER_PID_FILE:-/tmp/mock-docker.pid}"
+PORT="${SHIPYARD_TEST_DOCKER_PORT:-8080}"
+
+echo "docker $*" >> "$LOG_FILE"
+
+if [ "${1:-}" != "compose" ]; then
+  exit 0
+fi
+
+shift
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|-f)
+      shift 2
+      ;;
+    up)
+      if [[ " $* " == *" -d "* ]] || [[ " $* " == *" -d" ]]; then
+        if [ -f "$PID_FILE" ]; then
+          kill "$(cat "$PID_FILE")" 2>/dev/null || true
+          rm -f "$PID_FILE"
+        fi
+
+        python3 -m http.server "$PORT" >/dev/null 2>&1 &
+        echo "$!" > "$PID_FILE"
+      fi
+      exit 0
+      ;;
+    ps)
+      if [[ " $* " == *" running "* ]] || [[ " $* " == *"--status running"* ]]; then
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+          echo "mock-container-id"
+        fi
+      fi
+      exit 0
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+exit 0

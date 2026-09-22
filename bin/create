@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/config.sh"
+
 PROJECT="${1:-}"
 DOMAIN="_"
 TYPE="static"
+DOCKER_PORT="8080"
 
 shift || true
 
@@ -17,6 +22,10 @@ while [ $# -gt 0 ]; do
       TYPE="${2:-}"
       shift 2
       ;;
+    --port)
+      DOCKER_PORT="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -25,7 +34,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$PROJECT" ]; then
-  echo "Usage: shipyard create <project> [--domain example.com] [--type static|laravel|node]"
+  echo "Usage: shipyard create <project> [--domain example.com] [--type static|laravel|node|docker] [--port <port>]"
   exit 1
 fi
 
@@ -35,22 +44,28 @@ if [[ ! "$PROJECT" =~ ^[a-zA-Z0-9_-]+$ ]]; then
 fi
 
 case "$TYPE" in
-  static|laravel|node)
+  static|laravel|node|docker)
     ;;
   *)
     echo "Unsupported type: $TYPE"
-    echo "Supported types: static, laravel, node"
+    echo "Supported types: static, laravel, node, docker"
     exit 1
     ;;
 esac
 
-PROJECT_DIR="/var/www/sites/$PROJECT"
-CONFIG_FILE="/etc/deploy-sites/$PROJECT.conf"
+if [ "$TYPE" = "docker" ]; then
+  if ! validate_tcp_port "$DOCKER_PORT"; then
+    exit 1
+  fi
+fi
 
-NGINX_AVAILABLE="/etc/nginx/sites-available/$PROJECT"
-NGINX_ENABLED="/etc/nginx/sites-enabled/$PROJECT"
+PROJECT_DIR="$SITES_ROOT/$PROJECT"
+CONFIG_FILE="$CONFIG_DIR/$PROJECT.conf"
 
-TEMPLATE="/opt/shipyard/templates/nginx/$TYPE.conf"
+NGINX_AVAILABLE="$NGINX_SITES_AVAILABLE/$PROJECT"
+NGINX_ENABLED="$NGINX_SITES_ENABLED/$PROJECT"
+
+TEMPLATE="$SHIPYARD_ROOT/templates/nginx/$TYPE.conf"
 
 if [ ! -f "$TEMPLATE" ]; then
   echo "Template not found: $TEMPLATE"
@@ -69,8 +84,22 @@ fi
 
 mkdir -p "$PROJECT_DIR/releases"
 mkdir -p "$PROJECT_DIR/shared"
+mkdir -p "$CONFIG_DIR"
+mkdir -p "$NGINX_SITES_AVAILABLE"
+mkdir -p "$NGINX_SITES_ENABLED"
 
-cat > "$CONFIG_FILE" <<EOF
+if [ "$TYPE" = "docker" ]; then
+  cat > "$CONFIG_FILE" <<EOF
+PROJECT_NAME="$PROJECT"
+PROJECT_DIR="$PROJECT_DIR"
+KEEP_RELEASES=5
+TYPE="$TYPE"
+DOMAIN="$DOMAIN"
+DOCKER_PORT="$DOCKER_PORT"
+DOCKER_COMPOSE_FILE="docker-compose.prod.yml"
+EOF
+else
+  cat > "$CONFIG_FILE" <<EOF
 PROJECT_NAME="$PROJECT"
 PROJECT_DIR="$PROJECT_DIR"
 KEEP_RELEASES=5
@@ -78,19 +107,33 @@ TYPE="$TYPE"
 HEALTH_CHECK_FILE="index.html"
 DOMAIN="$DOMAIN"
 EOF
+fi
 
-sed \
-  -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
-  -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
-  -e "s|{{DOMAIN}}|$DOMAIN|g" \
-  "$TEMPLATE" > "$NGINX_AVAILABLE"
+if [ "$TYPE" = "docker" ]; then
+  sed \
+    -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
+    -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
+    -e "s|{{DOMAIN}}|$DOMAIN|g" \
+    -e "s|{{DOCKER_PORT}}|$DOCKER_PORT|g" \
+    "$TEMPLATE" > "$NGINX_AVAILABLE"
+else
+  sed \
+    -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
+    -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
+    -e "s|{{DOMAIN}}|$DOMAIN|g" \
+    "$TEMPLATE" > "$NGINX_AVAILABLE"
+fi
 
 if [ ! -L "$NGINX_ENABLED" ]; then
   ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 fi
 
-nginx -t
-sudo systemctl reload nginx
+if [ "${SHIPYARD_SKIP_NGINX_RELOAD:-0}" != "1" ]; then
+  nginx -t
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl reload nginx
+  fi
+fi
 
 echo ""
 echo "✔ Project created successfully"
@@ -99,6 +142,9 @@ echo "Project"
 echo "  Name   : $PROJECT"
 echo "  Type   : $TYPE"
 echo "  Domain : $DOMAIN"
+if [ "$TYPE" = "docker" ]; then
+  echo "  Port   : $DOCKER_PORT"
+fi
 echo ""
 echo "Paths"
 echo "  Directory : $PROJECT_DIR"

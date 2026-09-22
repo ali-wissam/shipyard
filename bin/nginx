@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/shipyard/lib/config.sh
+SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
+# shellcheck source=/dev/null
+source "$SHIPYARD_ROOT/lib/config.sh"
 
 PROJECT="${1:-}"
 
@@ -13,27 +15,38 @@ fi
 load_project_config "$PROJECT"
 
 DOMAIN="${DOMAIN:-_}"
-TEMPLATE="/opt/shipyard/templates/nginx/${TYPE:-static}.conf"
-NGINX_AVAILABLE="/etc/nginx/sites-available/$PROJECT"
-NGINX_ENABLED="/etc/nginx/sites-enabled/$PROJECT"
+TEMPLATE="$SHIPYARD_ROOT/templates/nginx/${TYPE:-static}.conf"
+NGINX_AVAILABLE="$NGINX_SITES_AVAILABLE/$PROJECT"
+NGINX_ENABLED="$NGINX_SITES_ENABLED/$PROJECT"
 
 if [ ! -f "$TEMPLATE" ]; then
   echo "Template not found: $TEMPLATE"
   exit 1
 fi
 
-sed \
-  -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" \
-  -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
-  -e "s|{{DOMAIN}}|$DOMAIN|g" \
-  "$TEMPLATE" | sudo tee "$NGINX_AVAILABLE" > /dev/null
+if [ "${TYPE:-static}" = "docker" ]; then
+  sed \
+    -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" \
+    -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
+    -e "s|{{DOMAIN}}|$DOMAIN|g" \
+    -e "s|{{DOCKER_PORT}}|${DOCKER_PORT:-8080}|g" \
+    "$TEMPLATE" | sudo tee "$NGINX_AVAILABLE" > /dev/null
+else
+  sed \
+    -e "s|{{PROJECT_NAME}}|$PROJECT_NAME|g" \
+    -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
+    -e "s|{{DOMAIN}}|$DOMAIN|g" \
+    "$TEMPLATE" | sudo tee "$NGINX_AVAILABLE" > /dev/null
+fi
 
 if [ ! -L "$NGINX_ENABLED" ]; then
   sudo ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 fi
 
-sudo nginx -t
-sudo systemctl reload nginx
+if [ "${SHIPYARD_SKIP_NGINX_RELOAD:-0}" != "1" ]; then
+  sudo nginx -t
+  sudo systemctl reload nginx
+fi
 
 echo "Nginx config applied for: $PROJECT"
 echo "Domain: $DOMAIN"
