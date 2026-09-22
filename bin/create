@@ -5,10 +5,74 @@ SHIPYARD_ROOT="${SHIPYARD_ROOT:-/opt/shipyard}"
 # shellcheck source=/dev/null
 source "$SHIPYARD_ROOT/lib/config.sh"
 
-PROJECT="${1:-}"
 DOMAIN="_"
 TYPE="static"
 DOCKER_PORT="8080"
+CREATE_SUCCEEDED=false
+
+CREATED_PROJECT_DIR=false
+CREATED_CONFIG=false
+CREATED_NGINX_AVAILABLE=false
+CREATED_NGINX_ENABLED=false
+
+rollback_create() {
+  if [ "$CREATE_SUCCEEDED" = true ]; then
+    return 0
+  fi
+
+  if [ "$CREATED_NGINX_ENABLED" = true ] && [ -L "$NGINX_ENABLED" ]; then
+    rm -f "$NGINX_ENABLED"
+  fi
+
+  if [ "$CREATED_NGINX_AVAILABLE" = true ] && [ -f "$NGINX_AVAILABLE" ]; then
+    rm -f "$NGINX_AVAILABLE"
+  fi
+
+  if [ "$CREATED_CONFIG" = true ] && [ -f "$CONFIG_FILE" ]; then
+    rm -f "$CONFIG_FILE"
+  fi
+
+  if [ "$CREATED_PROJECT_DIR" = true ] && [ -d "$PROJECT_DIR" ]; then
+    rm -rf "$PROJECT_DIR"
+  fi
+}
+
+trap rollback_create EXIT
+
+require_root() {
+  if [ "${SHIPYARD_SKIP_ROOT_CHECK:-0}" = "1" ]; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "shipyard create must be run with sudo."
+    if [ "$TYPE" = "docker" ]; then
+      echo "Try: sudo shipyard create $PROJECT --type $TYPE --domain $DOMAIN --port $DOCKER_PORT"
+    else
+      echo "Try: sudo shipyard create $PROJECT --type $TYPE --domain $DOMAIN"
+    fi
+    exit 1
+  fi
+}
+
+write_nginx_config() {
+  if [ "$TYPE" = "docker" ]; then
+    sed \
+      -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
+      -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
+      -e "s|{{DOMAIN}}|$DOMAIN|g" \
+      -e "s|{{DOCKER_PORT}}|$DOCKER_PORT|g" \
+      "$TEMPLATE" > "$NGINX_AVAILABLE"
+  else
+    sed \
+      -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
+      -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
+      -e "s|{{DOMAIN}}|$DOMAIN|g" \
+      "$TEMPLATE" > "$NGINX_AVAILABLE"
+  fi
+}
+
+PROJECT="${1:-}"
 
 shift || true
 
@@ -34,7 +98,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$PROJECT" ]; then
-  echo "Usage: shipyard create <project> [--domain example.com] [--type static|laravel|node|docker] [--port <port>]"
+  echo "Usage: sudo shipyard create <project> [--domain example.com] [--type static|laravel|node|docker] [--port <port>]"
   exit 1
 fi
 
@@ -61,11 +125,11 @@ fi
 
 PROJECT_DIR="$SITES_ROOT/$PROJECT"
 CONFIG_FILE="$CONFIG_DIR/$PROJECT.conf"
-
 NGINX_AVAILABLE="$NGINX_SITES_AVAILABLE/$PROJECT"
 NGINX_ENABLED="$NGINX_SITES_ENABLED/$PROJECT"
-
 TEMPLATE="$SHIPYARD_ROOT/templates/nginx/$TYPE.conf"
+
+require_root
 
 if [ ! -f "$TEMPLATE" ]; then
   echo "Template not found: $TEMPLATE"
@@ -82,11 +146,21 @@ if [ -e "$CONFIG_FILE" ]; then
   exit 1
 fi
 
+if [ -e "$NGINX_AVAILABLE" ]; then
+  echo "Nginx config already exists: $NGINX_AVAILABLE"
+  exit 1
+fi
+
+if [ -e "$NGINX_ENABLED" ]; then
+  echo "Nginx site already enabled: $NGINX_ENABLED"
+  exit 1
+fi
+
 mkdir -p "$PROJECT_DIR/releases"
 mkdir -p "$PROJECT_DIR/shared"
+CREATED_PROJECT_DIR=true
+
 mkdir -p "$CONFIG_DIR"
-mkdir -p "$NGINX_SITES_AVAILABLE"
-mkdir -p "$NGINX_SITES_ENABLED"
 
 if [ "$TYPE" = "docker" ]; then
   cat > "$CONFIG_FILE" <<EOF
@@ -109,32 +183,30 @@ HEALTH_CHECK_FILE="index.html"
 DOMAIN="$DOMAIN"
 EOF
 fi
+CREATED_CONFIG=true
 
-if [ "$TYPE" = "docker" ]; then
-  sed \
-    -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
-    -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
-    -e "s|{{DOMAIN}}|$DOMAIN|g" \
-    -e "s|{{DOCKER_PORT}}|$DOCKER_PORT|g" \
-    "$TEMPLATE" > "$NGINX_AVAILABLE"
-else
-  sed \
-    -e "s|{{PROJECT_NAME}}|$PROJECT|g" \
-    -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
-    -e "s|{{DOMAIN}}|$DOMAIN|g" \
-    "$TEMPLATE" > "$NGINX_AVAILABLE"
-fi
+mkdir -p "$NGINX_SITES_AVAILABLE"
+mkdir -p "$NGINX_SITES_ENABLED"
 
-if [ ! -L "$NGINX_ENABLED" ]; then
-  ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"
-fi
+write_nginx_config
+CREATED_NGINX_AVAILABLE=true
+
+ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"
+CREATED_NGINX_ENABLED=true
 
 if [ "${SHIPYARD_SKIP_NGINX_RELOAD:-0}" != "1" ]; then
-  nginx -t
+  if ! nginx -t; then
+    echo "Nginx configuration test failed."
+    exit 1
+  fi
+
   if command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl reload nginx
+    systemctl reload nginx
   fi
 fi
+
+CREATE_SUCCEEDED=true
+trap - EXIT
 
 echo ""
 echo "✔ Project created successfully"

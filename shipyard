@@ -55,9 +55,9 @@ show_help() {
 
   echo "Examples:"
 
-  echo "  shipyard create portfolio --type static --domain example.com"
+  echo "  sudo shipyard create portfolio --type static --domain example.com"
 
-  echo "  shipyard create blog --type docker --domain blog.example.com --port 8080"
+  echo "  sudo shipyard create blog --type docker --domain blog.example.com --port 8080"
 
   echo "  shipyard deploy portfolio /tmp/site.tar.gz abc123"
 

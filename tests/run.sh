@@ -11,6 +11,7 @@ export SHIPYARD_NGINX_AVAILABLE="$TEST_ROOT/nginx/sites-available"
 export SHIPYARD_NGINX_ENABLED="$TEST_ROOT/nginx/sites-enabled"
 export SHIPYARD_LOG_DIR="$TEST_ROOT/log"
 export SHIPYARD_SKIP_NGINX_RELOAD=1
+export SHIPYARD_SKIP_ROOT_CHECK=1
 export SHIPYARD_MOCK_DOCKER_LOG="$TEST_ROOT/mock-docker.log"
 export SHIPYARD_TEST_DOCKER_PID_FILE="$TEST_ROOT/mock-docker.pid"
 export SHIPYARD_MOCK_DOCKER_STATE="$TEST_ROOT/mock-docker.state"
@@ -130,6 +131,72 @@ say "Required files"
 assert_success "README exists" test -f "$ROOT_DIR/README.md"
 assert_success "VERSION exists" test -f "$ROOT_DIR/VERSION"
 assert_success "installer exists" test -f "$ROOT_DIR/install.sh"
+
+say "Create privilege and safety"
+
+NO_ROOT_TEST_ROOT="$TEST_ROOT/no-root"
+mkdir -p "$NO_ROOT_TEST_ROOT/config" "$NO_ROOT_TEST_ROOT/sites" \
+  "$NO_ROOT_TEST_ROOT/nginx/sites-available" "$NO_ROOT_TEST_ROOT/nginx/sites-enabled"
+
+unset SHIPYARD_SKIP_ROOT_CHECK
+export SHIPYARD_CONFIG_DIR="$NO_ROOT_TEST_ROOT/config"
+export SHIPYARD_SITES_ROOT="$NO_ROOT_TEST_ROOT/sites"
+export SHIPYARD_NGINX_AVAILABLE="$NO_ROOT_TEST_ROOT/nginx/sites-available"
+export SHIPYARD_NGINX_ENABLED="$NO_ROOT_TEST_ROOT/nginx/sites-enabled"
+
+assert_failure "create without root fails before making changes" \
+  shipyard create no-root-test --type static --domain no-root.example.com
+
+assert_success "no-root create leaves no project directory" \
+  test ! -e "$NO_ROOT_TEST_ROOT/sites/no-root-test"
+assert_success "no-root create leaves no config file" \
+  test ! -e "$NO_ROOT_TEST_ROOT/config/no-root-test.conf"
+
+export SHIPYARD_SKIP_ROOT_CHECK=1
+export SHIPYARD_CONFIG_DIR="$TEST_ROOT/config"
+export SHIPYARD_SITES_ROOT="$TEST_ROOT/sites"
+export SHIPYARD_NGINX_AVAILABLE="$TEST_ROOT/nginx/sites-available"
+export SHIPYARD_NGINX_ENABLED="$TEST_ROOT/nginx/sites-enabled"
+
+EXISTING_PROJECT="existing-project"
+reset_mock_docker
+assert_success "seed existing project" \
+  shipyard create "$EXISTING_PROJECT" --type static --domain existing.example.com
+assert_failure "existing project directory is not overwritten" \
+  shipyard create "$EXISTING_PROJECT" --type static --domain other.example.com
+assert_success "existing project config still present" \
+  test -f "$SHIPYARD_CONFIG_DIR/$EXISTING_PROJECT.conf"
+
+echo 'PROJECT_NAME="orphan"' > "$SHIPYARD_CONFIG_DIR/orphan-config.conf"
+assert_failure "existing config is not overwritten" \
+  shipyard create orphan-config --type static --domain orphan.example.com
+assert_file_contains "orphan config preserved" "$SHIPYARD_CONFIG_DIR/orphan-config.conf" 'PROJECT_NAME="orphan"'
+
+echo 'server { listen 80; }' > "$SHIPYARD_NGINX_AVAILABLE/existing-nginx"
+assert_failure "existing nginx config is not overwritten" \
+  shipyard create existing-nginx --type static --domain nginx.example.com
+assert_success "existing nginx config preserved" \
+  test -f "$SHIPYARD_NGINX_AVAILABLE/existing-nginx"
+
+ln -s "$SHIPYARD_NGINX_AVAILABLE/existing-nginx" "$SHIPYARD_NGINX_ENABLED/existing-symlink"
+assert_failure "existing nginx symlink is not overwritten" \
+  shipyard create existing-symlink --type static --domain symlink.example.com
+assert_success "existing nginx symlink preserved" \
+  test -L "$SHIPYARD_NGINX_ENABLED/existing-symlink"
+
+NGINX_FAIL_PROJECT="nginx-fail-project"
+unset SHIPYARD_SKIP_NGINX_RELOAD
+export SHIPYARD_MOCK_NGINX_TEST_FAIL=1
+assert_failure "nginx test failure does not leave partial project" \
+  shipyard create "$NGINX_FAIL_PROJECT" --type static --domain nginx-fail.example.com
+unset SHIPYARD_MOCK_NGINX_TEST_FAIL
+export SHIPYARD_SKIP_NGINX_RELOAD=1
+assert_success "nginx failure leaves no project directory" \
+  test ! -e "$SHIPYARD_SITES_ROOT/$NGINX_FAIL_PROJECT"
+assert_success "nginx failure leaves no config file" \
+  test ! -e "$SHIPYARD_CONFIG_DIR/$NGINX_FAIL_PROJECT.conf"
+assert_success "nginx failure leaves no nginx config" \
+  test ! -e "$SHIPYARD_NGINX_AVAILABLE/$NGINX_FAIL_PROJECT"
 
 say "Create docker project"
 

@@ -26,7 +26,7 @@ Instead of:
 You simply run:
 
 ```bash
-shipyard create portfolio --type static --domain example.com
+sudo shipyard create portfolio --type static --domain example.com
 ```
 
 or deploy a new release with:
@@ -127,10 +127,12 @@ shipyard doctor
 ## Create a project
 
 ```bash
-shipyard create portfolio \
+sudo shipyard create portfolio \
   --type static \
   --domain example.com
 ```
+
+`shipyard create` must be run with `sudo` because it writes to system paths such as `/etc/deploy-sites` and `/etc/nginx`.
 
 Supported project types:
 
@@ -142,7 +144,7 @@ Supported project types:
 ### Create a Docker project
 
 ```bash
-shipyard create blog \
+sudo shipyard create blog \
   --type docker \
   --domain blog.ali-wissam.com \
   --port 8080
