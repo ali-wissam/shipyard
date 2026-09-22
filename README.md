@@ -176,13 +176,13 @@ release/
 └── ...
 ```
 
-Shipyard extracts the artifact, switches the `current` release, and runs:
+Shipyard extracts the artifact, starts Docker Compose from the new release directory, and only switches `current` after the deployment passes health checks:
 
 ```bash
 docker compose -p shipyard-<project> -f docker-compose.prod.yml up -d --build
 ```
 
-Deployments are only marked successful after Docker containers are running and the configured port responds.
+If the new release fails, Shipyard restores the previous Docker deployment and leaves `current` pointing at the last healthy release.
 
 ---
 
@@ -209,6 +209,8 @@ Docker:
   Compose project : shipyard-blog
   Status          : running
   Port            : 8080
+  Health path     : /
+  Health          : healthy
 ```
 
 ---
@@ -219,7 +221,7 @@ Docker:
 shipyard rollback portfolio
 ```
 
-For Docker projects, rollback switches to the previous release and recreates the Docker application from that release.
+For Docker projects, rollback starts the previous release with Docker Compose, verifies it is healthy, and only then switches `current`. If rollback fails, Shipyard attempts to restore the currently working deployment.
 
 ---
 
@@ -262,11 +264,59 @@ shipyard doctor
 
 Shipyard orchestrates Docker deployments but does not generate Dockerfiles or application images. Your repository defines the container setup.
 
+### Architecture
+
+```
+Shipyard
+   ↓
+Docker Compose (shipyard-<project>)
+   ↓
+127.0.0.1:<DOCKER_PORT>
+   ↓
+Nginx
+   ↓
+blog.ali-wissam.com
+```
+
 ### Requirements
 
 - `Dockerfile`
 - `docker-compose.prod.yml` (default; configurable per project)
-- Application listens on the configured host port (default `8080`)
+- Application exposed on the configured **host** port (default `8080`)
+
+### Port mapping
+
+`DOCKER_PORT` is the **host** port Shipyard and Nginx use. The container may listen on a different internal port.
+
+Example Compose configuration:
+
+```yaml
+services:
+  app:
+    ports:
+      - "127.0.0.1:8080:80"
+```
+
+Shipyard health checks and Nginx both communicate with `http://127.0.0.1:8080`. The application inside the container may listen on port `80`.
+
+### Project configuration
+
+```bash
+TYPE=docker
+DOMAIN=blog.ali-wissam.com
+DOCKER_PORT=8080
+DOCKER_COMPOSE_FILE=docker-compose.prod.yml
+DOCKER_HEALTH_PATH=/
+KEEP_RELEASES=5
+```
+
+`DOCKER_HEALTH_PATH` defaults to `/` and can be customized per project:
+
+```bash
+DOCKER_HEALTH_PATH=/health
+```
+
+Shipyard checks `http://127.0.0.1:<DOCKER_PORT><DOCKER_HEALTH_PATH>` and requires a successful HTTP response when `curl` is available.
 
 ### Environment variables
 
@@ -280,16 +330,33 @@ During deployment, Shipyard links `shared/.env` into the active release without 
 
 ### Persistent data
 
-Docker volumes are managed by Docker Compose and survive normal deployments. Shipyard never runs destructive commands such as `docker compose down -v` during deploy or rollback.
+Docker volumes are managed by Docker Compose and survive normal deployments.
 
-### Failure safety
+**Shipyard never runs `docker compose down -v` during deployment, rollback, or failure recovery.**
 
-If a Docker deployment fails health checks, Shipyard:
+Release cleanup only removes old release directories. It does not remove Docker volumes or shared files.
 
-1. Logs the failure
-2. Restores the previous `current` release
-3. Attempts to restore the previous Docker deployment
-4. Removes the failed release directory
+### Transactional deployments
+
+Docker deployments are transactional:
+
+1. Extract and validate the new release
+2. Start Docker Compose from the new release directory
+3. Run health checks against the configured host port and path
+4. Switch `current` only after the new release is healthy
+
+If any step fails, Shipyard logs diagnostics, restores the previous Docker deployment when one exists, keeps `current` on the last healthy release, and removes only the failed release directory.
+
+### Transactional rollback
+
+Rollback follows the same principle:
+
+1. Validate the previous release
+2. Start Docker Compose for the previous release
+3. Run health checks
+4. Switch `current` only after the previous release is healthy
+
+If rollback fails, Shipyard attempts to restore the currently working deployment and leaves `current` unchanged.
 
 ---
 

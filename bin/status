@@ -55,11 +55,18 @@ fi
 if [ "$TYPE" = "docker" ]; then
   echo "Docker:"
   if [ -n "$CURRENT_RELEASE" ] && [ -d "$CURRENT_RELEASE" ]; then
-    docker_status_summary "$PROJECT" "$CURRENT_RELEASE" "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}" "${DOCKER_PORT:-8080}"
+    docker_status_summary \
+      "$PROJECT" \
+      "$CURRENT_RELEASE" \
+      "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}" \
+      "${DOCKER_PORT:-8080}" \
+      "${DOCKER_HEALTH_PATH:-/}"
   else
     echo "  Compose project : $(docker_compose_project_name "$PROJECT")"
     echo "  Status          : stopped"
     echo "  Port            : ${DOCKER_PORT:-8080}"
+    echo "  Health path     : $(docker_normalize_health_path "${DOCKER_HEALTH_PATH:-/}")"
+    echo "  Health          : unhealthy"
   fi
   echo ""
 fi

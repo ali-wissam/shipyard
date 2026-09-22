@@ -44,22 +44,45 @@ if [ -L "$CURRENT_LINK" ]; then
   PREVIOUS_RELEASE="$(readlink -f "$CURRENT_LINK")"
 fi
 
-deploy_failed() {
-  local reason="$1"
-  echo "$reason"
+switch_current_release() {
+  local target="$1"
 
   if [ -L "$CURRENT_LINK" ]; then
     rm "$CURRENT_LINK"
+  elif [ -d "$CURRENT_LINK" ]; then
+    rm -rf "$CURRENT_LINK"
   fi
 
-  if [ -n "$PREVIOUS_RELEASE" ] && [ -d "$PREVIOUS_RELEASE" ]; then
-    ln -s "$PREVIOUS_RELEASE" "$CURRENT_LINK"
+  ln -s "$target" "$CURRENT_LINK"
+}
 
-    if [ "$TYPE" = "docker" ]; then
-      echo "Restoring previous Docker deployment..."
-      if ! docker_restore_release "$PROJECT" "$PROJECT_DIR" "$PREVIOUS_RELEASE" "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}"; then
-        echo "Warning: failed to restore previous Docker deployment"
-      fi
+docker_deploy_abort() {
+  local reason="$1"
+
+  echo "$reason"
+  docker_log_failure "$LOG_FILE" "$reason" "$PROJECT" "$RELEASE_DIR" "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}"
+
+  if [ -n "$PREVIOUS_RELEASE" ] && [ -d "$PREVIOUS_RELEASE" ]; then
+    echo "Restoring previous Docker deployment..."
+    if ! docker_restore_release \
+      "$PROJECT" \
+      "$PROJECT_DIR" \
+      "$PREVIOUS_RELEASE" \
+      "${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}" \
+      "${DOCKER_PORT:-8080}" \
+      "${DOCKER_HEALTH_PATH:-/}" \
+      "$LOG_FILE"; then
+      echo "Warning: failed to restore previous Docker deployment"
+      {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: failed to restore previous Docker deployment"
+      } >> "$LOG_FILE"
+    fi
+  fi
+
+  if [ -L "$CURRENT_LINK" ] && [ "$(readlink -f "$CURRENT_LINK")" = "$(readlink -f "$RELEASE_DIR")" ]; then
+    rm "$CURRENT_LINK"
+    if [ -n "$PREVIOUS_RELEASE" ] && [ -d "$PREVIOUS_RELEASE" ]; then
+      ln -s "$PREVIOUS_RELEASE" "$CURRENT_LINK"
     fi
   fi
 
@@ -79,28 +102,29 @@ tar -xzf "$ARTIFACT_PATH" -C "$RELEASE_DIR"
 if [ "$TYPE" = "docker" ]; then
   COMPOSE_FILE="${DOCKER_COMPOSE_FILE:-docker-compose.prod.yml}"
   DOCKER_APP_PORT="${DOCKER_PORT:-8080}"
+  DOCKER_HEALTH_PATH="${DOCKER_HEALTH_PATH:-/}"
 
-  if [ ! -f "$RELEASE_DIR/$COMPOSE_FILE" ]; then
-    deploy_failed "Compose file not found: $RELEASE_DIR/$COMPOSE_FILE"
+  if ! docker_validate_release "$RELEASE_DIR" "$COMPOSE_FILE"; then
+    rm -rf "$RELEASE_DIR"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Deploy failed: $PROJECT $RELEASE_ID - compose file missing"
+    } >> "$LOG_FILE"
+    echo "Compose file not found: $RELEASE_DIR/$COMPOSE_FILE"
+    exit 1
   fi
 
-  if [ -L "$CURRENT_LINK" ]; then
-    rm "$CURRENT_LINK"
-  elif [ -d "$CURRENT_LINK" ]; then
-    rm -rf "$CURRENT_LINK"
+  if ! docker_deploy_release \
+    "$PROJECT" \
+    "$PROJECT_DIR" \
+    "$RELEASE_DIR" \
+    "$COMPOSE_FILE" \
+    "$DOCKER_APP_PORT" \
+    "$DOCKER_HEALTH_PATH" \
+    "$LOG_FILE"; then
+    docker_deploy_abort "Docker deployment failed"
   fi
 
-  ln -s "$RELEASE_DIR" "$CURRENT_LINK"
-
-  docker_link_shared_env "$PROJECT_DIR" "$RELEASE_DIR"
-
-  if ! docker_compose_run "$PROJECT" "$RELEASE_DIR" "$COMPOSE_FILE" up -d --build; then
-    deploy_failed "Docker compose up failed"
-  fi
-
-  if ! docker_health_check "$PROJECT" "$RELEASE_DIR" "$COMPOSE_FILE" "$DOCKER_APP_PORT"; then
-    deploy_failed "Docker health check failed"
-  fi
+  switch_current_release "$RELEASE_DIR"
 else
   if [ "$TYPE" = "static" ] && [ ! -f "$RELEASE_DIR/$HEALTH_FILE" ]; then
     rm -rf "$RELEASE_DIR"
@@ -111,13 +135,7 @@ else
     exit 1
   fi
 
-  if [ -L "$CURRENT_LINK" ]; then
-    rm "$CURRENT_LINK"
-  elif [ -d "$CURRENT_LINK" ]; then
-    rm -rf "$CURRENT_LINK"
-  fi
-
-  ln -s "$RELEASE_DIR" "$CURRENT_LINK"
+  switch_current_release "$RELEASE_DIR"
 fi
 
 if [ -d "$RELEASES_DIR" ]; then
